@@ -29,7 +29,7 @@
                 <button onclick="executeMove()">Attack!</button>
             </div>
             <button onclick="resetGame()">Reset Game</button>
-            <div id="status"></div>
+            <div id="status">Select a source node</div>
         </div>
     </div>
 
@@ -40,8 +40,7 @@
         let selectedSource = null;
         let selectedTarget = null;
         let gameData = null;
-        let simulation = null;
-        let nodes, links, labels;
+        let nodePositions = {}; // Store fixed positions
         
         const colors = {
             'grey': '#cccccc',
@@ -51,85 +50,68 @@
             'yellow': '#ffff44'
         };
 
-        let isInitialized = false;
+        function calculatePositions(nodes) {
+            const centerX = width / 2;
+            const centerY = height / 2;
+            const radius = Math.min(width, height) * 0.35;
+            
+            nodes.forEach((node, i) => {
+                const angle = (i / nodes.length) * 2 * Math.PI;
+                nodePositions[node.id] = {
+                    x: centerX + radius * Math.cos(angle),
+                    y: centerY + radius * Math.sin(angle)
+                };
+            });
+        }
 
         function fetchGameState() {
             fetch('/api/game_state')
                 .then(response => response.json())
                 .then(data => {
                     gameData = data;
-                    if (!isInitialized) {
-                        initializeGame(data);
-                        isInitialized = true;
-                    } else {
-                        updateGame(data);
+                    
+                    // Calculate positions only once
+                    if (Object.keys(nodePositions).length === 0) {
+                        calculatePositions(data.nodes);
                     }
+                    
+                    renderGame(data);
                     updateScores(data.scores);
                 });
         }
 
-        function initializeGame(data) {
+        function renderGame(data) {
             svg.selectAll("*").remove();
-            
-            // Create force simulation
-            simulation = d3.forceSimulation(data.nodes)
-                .force("link", d3.forceLink(data.edges).id(d => d.id).distance(100))
-                .force("charge", d3.forceManyBody().strength(-300))
-                .force("center", d3.forceCenter(width / 2, height / 2));
 
             // Draw links
-            links = svg.selectAll(".link")
+            svg.selectAll(".link")
                 .data(data.edges)
                 .enter().append("line")
-                .attr("class", "link");
+                .attr("class", "link")
+                .attr("x1", d => nodePositions[d.source].x)
+                .attr("y1", d => nodePositions[d.source].y)
+                .attr("x2", d => nodePositions[d.target].x)
+                .attr("y2", d => nodePositions[d.target].y);
 
             // Draw nodes
-            nodes = svg.selectAll(".node")
+            svg.selectAll(".node")
                 .data(data.nodes)
                 .enter().append("circle")
                 .attr("class", "node")
+                .attr("cx", d => nodePositions[d.id].x)
+                .attr("cy", d => nodePositions[d.id].y)
                 .attr("r", d => Math.max(15, Math.sqrt(d.troops) * 2))
                 .attr("fill", d => colors[d.owner])
                 .on("click", handleNodeClick);
 
             // Node labels
-            labels = svg.selectAll(".node-label")
+            svg.selectAll(".node-label")
                 .data(data.nodes)
                 .enter().append("text")
                 .attr("class", "node-label")
+                .attr("x", d => nodePositions[d.id].x)
+                .attr("y", d => nodePositions[d.id].y + 5)
                 .text(d => d.troops);
-
-            simulation.on("tick", () => {
-                links
-                    .attr("x1", d => d.source.x)
-                    .attr("y1", d => d.source.y)
-                    .attr("x2", d => d.target.x)
-                    .attr("y2", d => d.target.y);
-
-                nodes
-                    .attr("cx", d => d.x)
-                    .attr("cy", d => d.y);
-
-                labels
-                    .attr("x", d => d.x)
-                    .attr("y", d => d.y + 5);
-            });
-        }
-
-        function updateGame(data) {
-            // Update node data
-            simulation.nodes(data.nodes);
-            
-            // Update visual properties without moving nodes
-            nodes.data(data.nodes)
-                .attr("r", d => Math.max(15, Math.sqrt(d.troops) * 2))
-                .attr("fill", d => colors[d.owner]);
-
-            labels.data(data.nodes)
-                .text(d => d.troops);
-            
-            // Restart simulation with alpha 0 to prevent movement
-            simulation.alpha(0).restart();
         }
 
         function handleNodeClick(event, d) {
@@ -183,7 +165,6 @@
         function clearSelection() {
             selectedSource = null;
             selectedTarget = null;
-            if (nodes) nodes.classed("selected", false);
             document.getElementById("status").innerHTML = "Select a source node";
             document.getElementById("troop-input").value = "";
         }
@@ -197,7 +178,7 @@
 
         function resetGame() {
             fetch('/api/reset').then(() => {
-                isInitialized = false;
+                nodePositions = {}; // Reset positions for new graph
                 clearSelection();
                 fetchGameState();
             });
