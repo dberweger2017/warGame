@@ -12,13 +12,14 @@ def index():
 
 @app.route('/api/game_state')
 def get_game_state():
-    # Convert graph to JSON format
     nodes = []
     for node in game.graph.nodes():
         nodes.append({
             'id': node,
             'owner': game.node_owners[node].value,
-            'troops': game.node_troops[node]
+            'troops': game.node_troops[node],
+            'x': game.node_positions[node]['x'],
+            'y': game.node_positions[node]['y']
         })
     
     edges = []
@@ -30,6 +31,7 @@ def get_game_state():
         'edges': edges,
         'scores': {k.value: v for k, v in game.get_scores().items()},
         'valid_moves': game.get_valid_moves(Player.BLUE),
+        'ongoing_attacks': game.get_ongoing_attacks(),
         'game_over': game.game_over
     })
 

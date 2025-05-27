@@ -1,15 +1,24 @@
 import random
 import networkx as nx
 import time
+import math
 from enum import Enum
 from typing import Dict, List, Tuple, Optional
 
 class Player(Enum):
-    GREY = "grey"  # unconquered
-    RED = "red"    # bot
-    GREEN = "green"  # bot
-    BLUE = "blue"    # human player
-    YELLOW = "yellow"  # bot
+    GREY = "grey"
+    RED = "red"
+    GREEN = "green"
+    BLUE = "blue"
+    YELLOW = "yellow"
+
+class Attack:
+    def __init__(self, player, source, target, troops, completion_time):
+        self.player = player
+        self.source = source
+        self.target = target
+        self.troops = troops
+        self.completion_time = completion_time
 
 class ConquestGame:
     def __init__(self):
@@ -17,12 +26,17 @@ class ConquestGame:
         self.human_player = Player.BLUE
         self.last_income_time = time.time()
         self.last_bot_move_time = time.time()
+        self.ongoing_attacks = []
+        self.node_positions = {}  # Store positions for distance calculation
         self.reset_game()
     
     def reset_game(self):
-        # Generate random connected graph
-        num_nodes = random.randint(10, 30)
-        self.graph = nx.connected_watts_strogatz_graph(num_nodes, 3, 0.3)
+        # Generate random connected graph with more connections
+        num_nodes = random.randint(15, 25)
+        self.graph = nx.connected_watts_strogatz_graph(num_nodes, 6, 0.4)  # More connections
+        
+        # Calculate positions for distance
+        self._calculate_positions()
         
         # Initialize node states
         self.node_owners = {node: Player.GREY for node in self.graph.nodes()}
@@ -34,47 +48,83 @@ class ConquestGame:
         
         for node, player in zip(start_nodes, players):
             self.node_owners[node] = player
-            self.node_troops[node] = 10  # Starting troops
+            self.node_troops[node] = 10
         
         self.game_over = False
+        self.ongoing_attacks = []
         self.last_income_time = time.time()
         self.last_bot_move_time = time.time()
     
+    def _calculate_positions(self):
+        """Calculate fixed positions for distance calculations"""
+        num_nodes = len(self.graph.nodes())
+        radius = 300
+        for i, node in enumerate(self.graph.nodes()):
+            angle = (i / num_nodes) * 2 * math.pi
+            self.node_positions[node] = {
+                'x': 400 + radius * math.cos(angle),
+                'y': 300 + radius * math.sin(angle)
+            }
+    
+    def _get_distance(self, node1, node2):
+        """Calculate Euclidean distance between nodes"""
+        pos1 = self.node_positions[node1]
+        pos2 = self.node_positions[node2]
+        return math.sqrt((pos1['x'] - pos2['x'])**2 + (pos1['y'] - pos2['y'])**2)
+    
     def get_valid_moves(self, player: Player) -> List[Tuple[int, int]]:
-        """Get all valid (source, target) moves for a player"""
         moves = []
         player_nodes = [n for n, owner in self.node_owners.items() if owner == player]
         
         for source in player_nodes:
-            if self.node_troops[source] > 1:  # Need at least 1 troop to stay
+            if self.node_troops[source] > 1:
                 for target in self.graph.neighbors(source):
-                    if self.node_owners[target] != player:  # Can't attack own nodes
+                    if self.node_owners[target] != player:
                         moves.append((source, target))
         return moves
     
     def make_move(self, player: Player, source: int, target: int, troops: int) -> bool:
-        """Execute a move. Returns True if successful"""
-        # Validate move
+        """Start an attack (with travel time)"""
         if (source, target) not in self.get_valid_moves(player):
             return False
         if troops < 1 or troops >= self.node_troops[source]:
             return False
         
-        # Combat resolution
-        defending_troops = self.node_troops[target]
-        if troops > defending_troops:
-            # Attacker wins
-            self.node_owners[target] = player
-            self.node_troops[target] = troops - defending_troops
-            self.node_troops[source] -= troops
-        else:
-            # Defender wins
-            self.node_troops[source] -= troops
+        # Calculate travel time based on distance (speed: 100 pixels per second)
+        distance = self._get_distance(source, target)
+        travel_time = distance / 100  # seconds
+        completion_time = time.time() + travel_time
+        
+        # Remove troops from source immediately
+        self.node_troops[source] -= troops
+        
+        # Add to ongoing attacks
+        attack = Attack(player, source, target, troops, completion_time)
+        self.ongoing_attacks.append(attack)
         
         return True
     
+    def _process_attacks(self):
+        """Process completed attacks"""
+        current_time = time.time()
+        completed = []
+        
+        for i, attack in enumerate(self.ongoing_attacks):
+            if current_time >= attack.completion_time:
+                # Execute combat
+                defending_troops = self.node_troops[attack.target]
+                if attack.troops > defending_troops:
+                    # Attacker wins
+                    self.node_owners[attack.target] = attack.player
+                    self.node_troops[attack.target] = attack.troops - defending_troops
+                # If defender wins, troops are just lost
+                completed.append(i)
+        
+        # Remove completed attacks (reverse order to maintain indices)
+        for i in reversed(completed):
+            del self.ongoing_attacks[i]
+    
     def bot_random_move(self, bot: Player):
-        """Make a random move for a bot"""
         valid_moves = self.get_valid_moves(bot)
         if not valid_moves:
             return
@@ -83,12 +133,16 @@ class ConquestGame:
         max_troops = self.node_troops[source] - 1
         troops = random.randint(1, max_troops)
         
-        self.make_move(bot, source, target, troops)
-        print(f"{bot.value} attacks {target} from {source} with {troops} troops")
+        if self.make_move(bot, source, target, troops):
+            distance = self._get_distance(source, target)
+            travel_time = distance / 100
+            print(f"{bot.value} attacks {target} from {source} with {troops} troops (ETA: {travel_time:.1f}s)")
     
     def update(self):
-        """Call this continuously to handle timing"""
         current_time = time.time()
+        
+        # Process ongoing attacks
+        self._process_attacks()
         
         # Add income every 5 seconds
         if current_time - self.last_income_time >= 5:
@@ -110,13 +164,11 @@ class ConquestGame:
             print(f"Game Over! {winner.value} wins!")
     
     def add_income(self):
-        """Add 5 troops to each owned node"""
         for node, owner in self.node_owners.items():
             if owner != Player.GREY:
                 self.node_troops[node] += 5
     
     def get_scores(self) -> Dict[Player, int]:
-        """Get node count for each player"""
         scores = {player: 0 for player in Player if player != Player.GREY}
         for owner in self.node_owners.values():
             if owner != Player.GREY:
@@ -124,19 +176,18 @@ class ConquestGame:
         return scores
     
     def get_winner(self) -> Optional[Player]:
-        """Check if game is over and return winner"""
         scores = self.get_scores()
         if sum(scores.values()) == len(self.graph.nodes()):
             return max(scores, key=scores.get)
         return None
-
-# Test with game loop
-if __name__ == "__main__":
-    game = ConquestGame()
-    print(f"Game started with {len(game.graph.nodes())} nodes")
-    print(f"Your valid moves: {game.get_valid_moves(Player.BLUE)}")
     
-    # Simple game loop
-    while not game.game_over:
-        game.update()
-        time.sleep(0.1)  # Small delay
+    def get_ongoing_attacks(self):
+        """Get ongoing attacks for frontend visualization"""
+        return [{
+            'player': attack.player.value,
+            'source': attack.source,
+            'target': attack.target,
+            'troops': attack.troops,
+            'completion_time': attack.completion_time,
+            'progress': min(1.0, (time.time() - (attack.completion_time - self._get_distance(attack.source, attack.target) / 100)) / (self._get_distance(attack.source, attack.target) / 100))
+        } for attack in self.ongoing_attacks]

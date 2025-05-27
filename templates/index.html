@@ -10,11 +10,13 @@
         #game-board { border: 1px solid #ccc; }
         #controls { width: 300px; }
         .node { stroke: #fff; stroke-width: 2px; cursor: pointer; }
-        .link { stroke: #999; stroke-width: 2px; }
-        .node-label { text-anchor: middle; font-size: 12px; font-weight: bold; }
+        .link { stroke: #999; stroke-width: 1px; }
+        .node-label { text-anchor: middle; font-size: 12px; font-weight: bold; pointer-events: none; }
         .selected { stroke: #000; stroke-width: 4px; }
+        .attack-ball { r: 3; }
         button { margin: 5px; padding: 10px; }
         #scores { margin: 10px 0; }
+        #attacks { margin: 10px 0; padding: 10px; background: #f0f0f0; border-radius: 5px; }
     </style>
 </head>
 <body>
@@ -23,6 +25,10 @@
         <svg id="game-board" width="800" height="600"></svg>
         <div id="controls">
             <div id="scores"></div>
+            <div id="attacks">
+                <h4>Ongoing Attacks:</h4>
+                <div id="attack-list"></div>
+            </div>
             <div id="move-info">
                 <p>Click source node, then target node</p>
                 <input type="number" id="troop-input" placeholder="Troops" min="1">
@@ -40,7 +46,6 @@
         let selectedSource = null;
         let selectedTarget = null;
         let gameData = null;
-        let nodePositions = {}; // Store fixed positions
         
         const colors = {
             'grey': '#cccccc',
@@ -50,33 +55,14 @@
             'yellow': '#ffff44'
         };
 
-        function calculatePositions(nodes) {
-            const centerX = width / 2;
-            const centerY = height / 2;
-            const radius = Math.min(width, height) * 0.35;
-            
-            nodes.forEach((node, i) => {
-                const angle = (i / nodes.length) * 2 * Math.PI;
-                nodePositions[node.id] = {
-                    x: centerX + radius * Math.cos(angle),
-                    y: centerY + radius * Math.sin(angle)
-                };
-            });
-        }
-
         function fetchGameState() {
             fetch('/api/game_state')
                 .then(response => response.json())
                 .then(data => {
                     gameData = data;
-                    
-                    // Calculate positions only once
-                    if (Object.keys(nodePositions).length === 0) {
-                        calculatePositions(data.nodes);
-                    }
-                    
                     renderGame(data);
                     updateScores(data.scores);
+                    updateAttacks(data.ongoing_attacks);
                 });
         }
 
@@ -88,18 +74,30 @@
                 .data(data.edges)
                 .enter().append("line")
                 .attr("class", "link")
-                .attr("x1", d => nodePositions[d.source].x)
-                .attr("y1", d => nodePositions[d.source].y)
-                .attr("x2", d => nodePositions[d.target].x)
-                .attr("y2", d => nodePositions[d.target].y);
+                .attr("x1", d => {
+                    const sourceNode = data.nodes.find(n => n.id === d.source);
+                    return sourceNode ? sourceNode.x : 0;
+                })
+                .attr("y1", d => {
+                    const sourceNode = data.nodes.find(n => n.id === d.source);
+                    return sourceNode ? sourceNode.y : 0;
+                })
+                .attr("x2", d => {
+                    const targetNode = data.nodes.find(n => n.id === d.target);
+                    return targetNode ? targetNode.x : 0;
+                })
+                .attr("y2", d => {
+                    const targetNode = data.nodes.find(n => n.id === d.target);
+                    return targetNode ? targetNode.y : 0;
+                });
 
             // Draw nodes
             svg.selectAll(".node")
                 .data(data.nodes)
                 .enter().append("circle")
                 .attr("class", "node")
-                .attr("cx", d => nodePositions[d.id].x)
-                .attr("cy", d => nodePositions[d.id].y)
+                .attr("cx", d => d.x)
+                .attr("cy", d => d.y)
                 .attr("r", d => Math.max(15, Math.sqrt(d.troops) * 2))
                 .attr("fill", d => colors[d.owner])
                 .on("click", handleNodeClick);
@@ -109,9 +107,38 @@
                 .data(data.nodes)
                 .enter().append("text")
                 .attr("class", "node-label")
-                .attr("x", d => nodePositions[d.id].x)
-                .attr("y", d => nodePositions[d.id].y + 5)
+                .attr("x", d => d.x)
+                .attr("y", d => d.y + 5)
                 .text(d => d.troops);
+
+            // Draw attack animations
+            if (data.ongoing_attacks) {
+                data.ongoing_attacks.forEach(attack => {
+                    const sourceNode = data.nodes.find(n => n.id === attack.source);
+                    const targetNode = data.nodes.find(n => n.id === attack.target);
+                    
+                    if (sourceNode && targetNode) {
+                        const numBalls = Math.max(1, Math.floor(attack.troops / 10));
+                        
+                        for (let i = 0; i < numBalls; i++) {
+                            const offset = (i / numBalls) * 0.2; // Spread balls out
+                            const progress = Math.max(0, Math.min(1, attack.progress - offset));
+                            
+                            const x = sourceNode.x + (targetNode.x - sourceNode.x) * progress;
+                            const y = sourceNode.y + (targetNode.y - sourceNode.y) * progress;
+                            
+                            svg.append("circle")
+                                .attr("class", "attack-ball")
+                                .attr("cx", x)
+                                .attr("cy", y)
+                                .attr("r", 4)
+                                .attr("fill", colors[attack.player])
+                                .attr("stroke", "#000")
+                                .attr("stroke-width", 1);
+                        }
+                    }
+                });
+            }
         }
 
         function handleNodeClick(event, d) {
@@ -124,8 +151,13 @@
             } else {
                 if (d.id !== selectedSource.id && d.owner !== 'blue') {
                     selectedTarget = d;
+                    const distance = Math.sqrt(
+                        Math.pow(d.x - selectedSource.x, 2) + 
+                        Math.pow(d.y - selectedSource.y, 2)
+                    );
+                    const travelTime = (distance / 100).toFixed(1);
                     document.getElementById("status").innerHTML = 
-                        `Attack ${d.id} from ${selectedSource.id}? Enter troop count.`;
+                        `Attack ${d.id} from ${selectedSource.id}? Travel time: ${travelTime}s`;
                     document.getElementById("troop-input").max = selectedSource.troops - 1;
                 } else {
                     clearSelection();
@@ -176,17 +208,35 @@
                 ).join('');
         }
 
+        function updateAttacks(attacks) {
+            const attackList = document.getElementById("attack-list");
+            if (attacks && attacks.length > 0) {
+                attackList.innerHTML = attacks.map(attack => {
+                    const progress = Math.round(attack.progress * 100);
+                    const remainingTime = Math.max(0, attack.completion_time - Date.now() / 1000);
+                    return `<div style="color: ${colors[attack.player]}">
+                        ${attack.player} → ${attack.target} (${attack.troops} troops) - ${progress}%
+                        <div style="background: #ccc; height: 4px; margin: 2px 0;">
+                            <div style="background: ${colors[attack.player]}; height: 100%; width: ${progress}%;"></div>
+                        </div>
+                    </div>`;
+                }).join('');
+            } else {
+                attackList.innerHTML = "<em>No ongoing attacks</em>";
+            }
+        }
+
         function resetGame() {
             fetch('/api/reset').then(() => {
-                nodePositions = {}; // Reset positions for new graph
                 clearSelection();
                 fetchGameState();
             });
         }
 
+        // Update more frequently to show smooth animations
         setInterval(() => {
             fetch('/api/update').then(() => fetchGameState());
-        }, 1000);
+        }, 200);
 
         fetchGameState();
     </script>
