@@ -1,0 +1,218 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Conquest Game</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; }
+        #game-container { display: flex; gap: 20px; }
+        #game-board { border: 1px solid #ccc; }
+        #controls { width: 300px; }
+        .node { stroke: #fff; stroke-width: 2px; cursor: pointer; }
+        .link { stroke: #999; stroke-width: 2px; }
+        .node-label { text-anchor: middle; font-size: 12px; font-weight: bold; }
+        .selected { stroke: #000; stroke-width: 4px; }
+        button { margin: 5px; padding: 10px; }
+        #scores { margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1>Conquest Game</h1>
+    <div id="game-container">
+        <svg id="game-board" width="800" height="600"></svg>
+        <div id="controls">
+            <div id="scores"></div>
+            <div id="move-info">
+                <p>Click source node, then target node</p>
+                <input type="number" id="troop-input" placeholder="Troops" min="1">
+                <button onclick="executeMove()">Attack!</button>
+            </div>
+            <button onclick="resetGame()">Reset Game</button>
+            <div id="status"></div>
+        </div>
+    </div>
+
+    <script>
+        const svg = d3.select("#game-board");
+        const width = 800, height = 600;
+        
+        let selectedSource = null;
+        let selectedTarget = null;
+        let gameData = null;
+        let simulation = null;
+        let nodes, links, labels; // Store D3 selections
+        
+        const colors = {
+            'grey': '#cccccc',
+            'red': '#ff4444',
+            'green': '#44ff44',
+            'blue': '#4444ff',
+            'yellow': '#ffff44'
+        };
+    
+        let isInitialized = false;
+    
+        function fetchGameState() {
+            fetch('/api/game_state')
+                .then(response => response.json())
+                .then(data => {
+                    gameData = data;
+                    if (!isInitialized) {
+                        initializeGame(data);
+                        isInitialized = true;
+                    } else {
+                        updateGame(data);
+                    }
+                    updateScores(data.scores);
+                });
+        }
+    
+        function initializeGame(data) {
+            svg.selectAll("*").remove();
+            
+            // Create force simulation
+            simulation = d3.forceSimulation(data.nodes)
+                .force("link", d3.forceLink(data.edges).id(d => d.id).distance(100))
+                .force("charge", d3.forceManyBody().strength(-300))
+                .force("center", d3.forceCenter(width / 2, height / 2));
+    
+            // Draw links
+            links = svg.selectAll(".link")
+                .data(data.edges)
+                .enter().append("line")
+                .attr("class", "link");
+    
+            // Draw nodes
+            nodes = svg.selectAll(".node")
+                .data(data.nodes)
+                .enter().append("circle")
+                .attr("class", "node")
+                .attr("r", d => Math.max(15, Math.sqrt(d.troops) * 2))
+                .attr("fill", d => colors[d.owner])
+                .on("click", handleNodeClick);
+    
+            // Node labels
+            labels = svg.selectAll(".node-label")
+                .data(data.nodes)
+                .enter().append("text")
+                .attr("class", "node-label")
+                .text(d => d.troops);
+    
+            simulation.on("tick", () => {
+                links
+                    .attr("x1", d => d.source.x)
+                    .attr("y1", d => d.source.y)
+                    .attr("x2", d => d.target.x)
+                    .attr("y2", d => d.target.y);
+    
+                nodes
+                    .attr("cx", d => d.x)
+                    .attr("cy", d => d.y);
+    
+                labels
+                    .attr("x", d => d.x)
+                    .attr("y", d => d.y + 5);
+            });
+        }
+    
+        function updateGame(data) {
+            // Update node data
+            simulation.nodes(data.nodes);
+            
+            // Update visual properties without moving nodes
+            nodes.data(data.nodes)
+                .attr("r", d => Math.max(15, Math.sqrt(d.troops) * 2))
+                .attr("fill", d => colors[d.owner]);
+    
+            labels.data(data.nodes)
+                .text(d => d.troops);
+            
+            // Restart simulation with alpha 0 to prevent movement
+            simulation.alpha(0).restart();
+        }
+    
+        function handleNodeClick(event, d) {
+            if (!selectedSource) {
+                // Select source node (must be blue)
+                if (d.owner === 'blue' && d.troops > 1) {
+                    selectedSource = d;
+                    d3.select(event.target).classed("selected", true);
+                    document.getElementById("status").innerHTML = `Selected source: ${d.id} (${d.troops} troops)`;
+                }
+            } else {
+                // Select target node
+                if (d.id !== selectedSource.id && d.owner !== 'blue') {
+                    selectedTarget = d;
+                    document.getElementById("status").innerHTML = 
+                        `Attack ${d.id} from ${selectedSource.id}? Enter troop count.`;
+                    document.getElementById("troop-input").max = selectedSource.troops - 1;
+                } else {
+                    // Cancel selection
+                    clearSelection();
+                }
+            }
+        }
+    
+        function executeMove() {
+            if (!selectedSource || !selectedTarget) return;
+            
+            const troops = parseInt(document.getElementById("troop-input").value);
+            if (!troops || troops < 1 || troops >= selectedSource.troops) {
+                alert("Invalid troop count");
+                return;
+            }
+    
+            fetch('/api/make_move', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    source: selectedSource.id,
+                    target: selectedTarget.id,
+                    troops: troops
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    clearSelection();
+                    fetchGameState();
+                } else {
+                    alert("Invalid move!");
+                }
+            });
+        }
+    
+        function clearSelection() {
+            selectedSource = null;
+            selectedTarget = null;
+            if (nodes) nodes.classed("selected", false);
+            document.getElementById("status").innerHTML = "Select a source node";
+            document.getElementById("troop-input").value = "";
+        }
+    
+        function updateScores(scores) {
+            document.getElementById("scores").innerHTML = 
+                Object.entries(scores).map(([player, score]) => 
+                    `<div style="color: ${colors[player]}">${player}: ${score} nodes</div>`
+                ).join('');
+        }
+    
+        function resetGame() {
+            fetch('/api/reset').then(() => {
+                isInitialized = false;
+                clearSelection();
+                fetchGameState();
+            });
+        }
+    
+        // Auto-update game state
+        setInterval(() => {
+            fetch('/api/update').then(() => fetchGameState());
+        }, 1000);
+    
+        // Initial load
+        fetchGameState();
+    </script>
+</body>
+</html>
