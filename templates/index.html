@@ -1,4 +1,4 @@
-<!-- templates/index.html -->
+<!-- templates/index.html - Better clicking and target highlighting -->
 <!DOCTYPE html>
 <html>
 <head>
@@ -10,13 +10,17 @@
         #game-board { border: 1px solid #ccc; }
         #controls { width: 300px; }
         .node { stroke: #fff; stroke-width: 2px; cursor: pointer; }
+        .node-clickable { stroke: #fff; stroke-width: 3px; cursor: pointer; }
         .link { stroke: #999; stroke-width: 1px; }
         .node-label { text-anchor: middle; font-size: 12px; font-weight: bold; pointer-events: none; }
-        .selected { stroke: #000; stroke-width: 4px; }
+        .selected { stroke: #000; stroke-width: 5px; }
+        .valid-target { stroke: #00ffff; stroke-width: 4px; stroke-dasharray: 5,5; }
         .attack-ball { r: 3; }
+        .transfer-ball { r: 3; stroke-dasharray: 2,2; }
         button { margin: 5px; padding: 10px; }
         #scores { margin: 10px 0; }
         #attacks { margin: 10px 0; padding: 10px; background: #f0f0f0; border-radius: 5px; }
+        .troop-info { background: #e8f4f8; padding: 5px; margin: 5px 0; border-radius: 3px; }
     </style>
 </head>
 <body>
@@ -26,13 +30,19 @@
         <div id="controls">
             <div id="scores"></div>
             <div id="attacks">
-                <h4>Ongoing Attacks:</h4>
+                <h4>Ongoing Actions:</h4>
                 <div id="attack-list"></div>
             </div>
             <div id="move-info">
+                <div class="troop-info">
+                    <strong>Combat Rules:</strong> Need MORE troops than defender to conquer.<br>
+                    <strong>Green Strategy:</strong> Waits, then attacks with minimal troops to guarantee conquest.
+                </div>
                 <p>Click source node, then target node</p>
-                <input type="number" id="troop-input" placeholder="Troops" min="1">
-                <button onclick="executeMove()">Attack!</button>
+                <label for="troop-input">Troops to send:</label>
+                <input type="number" id="troop-input" placeholder="Number of troops" min="1">
+                <button onclick="executeMove()">Send Troops!</button>
+                <div id="troop-range"></div>
             </div>
             <button onclick="resetGame()">Reset Game</button>
             <div id="status">Select a source node</div>
@@ -43,8 +53,8 @@
         const svg = d3.select("#game-board");
         const width = 800, height = 600;
         
-        let selectedSource = null;
-        let selectedTarget = null;
+        let selectedSourceId = null;
+        let selectedTargetId = null;
         let gameData = null;
         
         const colors = {
@@ -55,6 +65,28 @@
             'yellow': '#ffff44'
         };
 
+        function getCurrentNode(nodeId) {
+            return gameData ? gameData.nodes.find(n => n.id === nodeId) : null;
+        }
+
+        function getValidTargets(sourceId) {
+            if (!gameData || !sourceId) return [];
+            
+            const sourceNode = getCurrentNode(sourceId);
+            if (!sourceNode) return [];
+            
+            const validTargets = [];
+            gameData.edges.forEach(edge => {
+                if (edge.source === sourceId) {
+                    validTargets.push(edge.target);
+                } else if (edge.target === sourceId) {
+                    validTargets.push(edge.source);
+                }
+            });
+            
+            return validTargets.filter(targetId => targetId !== sourceId);
+        }
+
         function fetchGameState() {
             fetch('/api/game_state')
                 .then(response => response.json())
@@ -63,7 +95,48 @@
                     renderGame(data);
                     updateScores(data.scores);
                     updateAttacks(data.ongoing_attacks);
+                    updateSelectionInfo();
                 });
+        }
+
+        function updateSelectionInfo() {
+            if (selectedSourceId) {
+                const currentSource = getCurrentNode(selectedSourceId);
+                if (currentSource) {
+                    document.getElementById("status").innerHTML = 
+                        `Selected source: Node ${currentSource.id} has ${currentSource.troops} TROOPS available`;
+                    
+                    document.getElementById("troop-input").max = currentSource.troops;
+                    if (!document.getElementById("troop-input").value) {
+                        document.getElementById("troop-input").value = currentSource.troops;
+                    }
+                    
+                    if (selectedTargetId) {
+                        const currentTarget = getCurrentNode(selectedTargetId);
+                        if (currentTarget) {
+                            const distance = Math.sqrt(
+                                Math.pow(currentTarget.x - currentSource.x, 2) + 
+                                Math.pow(currentTarget.y - currentSource.y, 2)
+                            );
+                            const travelTime = (distance / 100).toFixed(1);
+                            const actionType = currentTarget.owner === 'blue' ? 'Transfer' : 'Attack';
+                            
+                            let statusMsg = `${actionType} Node ${currentTarget.id} from Node ${currentSource.id}? Travel time: ${travelTime}s`;
+                            
+                            if (actionType === 'Attack') {
+                                const troopsNeeded = currentTarget.troops + 1;
+                                statusMsg += `<br>Defender has ${currentTarget.troops} troops. Need ${troopsNeeded}+ to conquer.`;
+                            }
+                            
+                            document.getElementById("status").innerHTML = statusMsg;
+                            
+                            const maxBalls = Math.floor(currentSource.troops / 10);
+                            document.getElementById("troop-range").innerHTML = 
+                                `Range: 1-${currentSource.troops} troops (will show as 1-${Math.max(1, maxBalls)} balls)`;
+                        }
+                    }
+                }
+            }
         }
 
         function renderGame(data) {
@@ -91,8 +164,20 @@
                     return targetNode ? targetNode.y : 0;
                 });
 
-            // Draw nodes
-            svg.selectAll(".node")
+            // Draw larger invisible circles for better clicking
+            svg.selectAll(".node-click-area")
+                .data(data.nodes)
+                .enter().append("circle")
+                .attr("class", "node-click-area")
+                .attr("cx", d => d.x)
+                .attr("cy", d => d.y)
+                .attr("r", d => Math.max(20, Math.sqrt(d.troops) * 2.5)) // Bigger click area
+                .attr("fill", "transparent")
+                .attr("cursor", "pointer")
+                .on("click", handleNodeClick);
+
+            // Draw visible nodes
+            const nodeElements = svg.selectAll(".node")
                 .data(data.nodes)
                 .enter().append("circle")
                 .attr("class", "node")
@@ -100,7 +185,17 @@
                 .attr("cy", d => d.y)
                 .attr("r", d => Math.max(15, Math.sqrt(d.troops) * 2))
                 .attr("fill", d => colors[d.owner])
-                .on("click", handleNodeClick);
+                .style("pointer-events", "none"); // Don't interfere with click areas
+
+            // Highlight selection and valid targets
+            if (selectedSourceId) {
+                nodeElements.filter(d => d.id === selectedSourceId)
+                    .classed("selected", true);
+                
+                const validTargets = getValidTargets(selectedSourceId);
+                nodeElements.filter(d => validTargets.includes(d.id))
+                    .classed("valid-target", true);
+            }
 
             // Node labels
             svg.selectAll(".node-label")
@@ -111,7 +206,7 @@
                 .attr("y", d => d.y + 5)
                 .text(d => d.troops);
 
-            // Draw attack animations
+            // Draw attack/transfer animations
             if (data.ongoing_attacks) {
                 data.ongoing_attacks.forEach(attack => {
                     const sourceNode = data.nodes.find(n => n.id === attack.source);
@@ -121,20 +216,26 @@
                         const numBalls = Math.max(1, Math.floor(attack.troops / 10));
                         
                         for (let i = 0; i < numBalls; i++) {
-                            const offset = (i / numBalls) * 0.2; // Spread balls out
+                            const offset = (i / numBalls) * 0.2;
                             const progress = Math.max(0, Math.min(1, attack.progress - offset));
                             
                             const x = sourceNode.x + (targetNode.x - sourceNode.x) * progress;
                             const y = sourceNode.y + (targetNode.y - sourceNode.y) * progress;
                             
-                            svg.append("circle")
-                                .attr("class", "attack-ball")
+                            const ball = svg.append("circle")
                                 .attr("cx", x)
                                 .attr("cy", y)
                                 .attr("r", 4)
                                 .attr("fill", colors[attack.player])
                                 .attr("stroke", "#000")
                                 .attr("stroke-width", 1);
+                            
+                            if (attack.is_transfer) {
+                                ball.attr("stroke-dasharray", "2,2")
+                                    .attr("class", "transfer-ball");
+                            } else {
+                                ball.attr("class", "attack-ball");
+                            }
                         }
                     }
                 });
@@ -142,44 +243,49 @@
         }
 
         function handleNodeClick(event, d) {
-            if (!selectedSource) {
-                if (d.owner === 'blue' && d.troops > 1) {
-                    selectedSource = d;
-                    d3.select(event.target).classed("selected", true);
-                    document.getElementById("status").innerHTML = `Selected source: ${d.id} (${d.troops} troops)`;
+            if (!selectedSourceId) {
+                if (d.owner === 'blue' && d.troops > 0) {
+                    selectedSourceId = d.id;
+                    updateSelectionInfo();
                 }
             } else {
-                if (d.id !== selectedSource.id && d.owner !== 'blue') {
-                    selectedTarget = d;
-                    const distance = Math.sqrt(
-                        Math.pow(d.x - selectedSource.x, 2) + 
-                        Math.pow(d.y - selectedSource.y, 2)
-                    );
-                    const travelTime = (distance / 100).toFixed(1);
-                    document.getElementById("status").innerHTML = 
-                        `Attack ${d.id} from ${selectedSource.id}? Travel time: ${travelTime}s`;
-                    document.getElementById("troop-input").max = selectedSource.troops - 1;
-                } else {
+                const validTargets = getValidTargets(selectedSourceId);
+                if (validTargets.includes(d.id)) {
+                    selectedTargetId = d.id;
+                    updateSelectionInfo();
+                } else if (d.id === selectedSourceId) {
                     clearSelection();
+                } else {
+                    // Clicked invalid target - show message
+                    alert("Invalid target! You can only attack connected nodes.");
                 }
             }
         }
 
         function executeMove() {
-            if (!selectedSource || !selectedTarget) return;
+            if (!selectedSourceId || !selectedTargetId) return;
             
-            const troops = parseInt(document.getElementById("troop-input").value);
-            if (!troops || troops < 1 || troops >= selectedSource.troops) {
-                alert("Invalid troop count");
+            const currentSource = getCurrentNode(selectedSourceId);
+            if (!currentSource) {
+                alert("Source node not found!");
                 return;
             }
+            
+            const troops = parseInt(document.getElementById("troop-input").value);
+            if (!troops || troops < 1 || troops > currentSource.troops) {
+                alert(`Invalid troop count! Must be between 1 and ${currentSource.troops}`);
+                return;
+            }
+
+            const ballsToShow = Math.max(1, Math.floor(troops / 10));
+            console.log(`Sending ${troops} TROOPS (will show as ${ballsToShow} balls)`);
 
             fetch('/api/make_move', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
-                    source: selectedSource.id,
-                    target: selectedTarget.id,
+                    source: selectedSourceId,
+                    target: selectedTargetId,
                     troops: troops
                 })
             })
@@ -195,10 +301,11 @@
         }
 
         function clearSelection() {
-            selectedSource = null;
-            selectedTarget = null;
+            selectedSourceId = null;
+            selectedTargetId = null;
             document.getElementById("status").innerHTML = "Select a source node";
             document.getElementById("troop-input").value = "";
+            document.getElementById("troop-range").innerHTML = "";
         }
 
         function updateScores(scores) {
@@ -213,16 +320,19 @@
             if (attacks && attacks.length > 0) {
                 attackList.innerHTML = attacks.map(attack => {
                     const progress = Math.round(attack.progress * 100);
-                    const remainingTime = Math.max(0, attack.completion_time - Date.now() / 1000);
+                    const actionType = attack.is_transfer ? 'Transfer' : 'Attack';
+                    const icon = attack.is_transfer ? '→' : '⚔';
+                    const ballCount = Math.max(1, Math.floor(attack.troops / 10));
+                    
                     return `<div style="color: ${colors[attack.player]}">
-                        ${attack.player} → ${attack.target} (${attack.troops} troops) - ${progress}%
+                        ${attack.player} ${icon} Node ${attack.target}: ${attack.troops} troops (${ballCount} balls) - ${progress}%
                         <div style="background: #ccc; height: 4px; margin: 2px 0;">
-                            <div style="background: ${colors[attack.player]}; height: 100%; width: ${progress}%;"></div>
+                            <div style="background: ${colors[attack.player]}; height: 100%; width: ${progress}%; ${attack.is_transfer ? 'border: 1px dashed #000;' : ''}"></div>
                         </div>
                     </div>`;
                 }).join('');
             } else {
-                attackList.innerHTML = "<em>No ongoing attacks</em>";
+                attackList.innerHTML = "<em>No ongoing actions</em>";
             }
         }
 
@@ -233,7 +343,6 @@
             });
         }
 
-        // Update more frequently to show smooth animations
         setInterval(() => {
             fetch('/api/update').then(() => fetchGameState());
         }, 200);
