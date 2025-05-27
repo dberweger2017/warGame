@@ -41,7 +41,7 @@
         let selectedTarget = null;
         let gameData = null;
         let simulation = null;
-        let nodes, links, labels; // Store D3 selections
+        let nodes, links, labels;
         
         const colors = {
             'grey': '#cccccc',
@@ -50,9 +50,9 @@
             'blue': '#4444ff',
             'yellow': '#ffff44'
         };
-    
+
         let isInitialized = false;
-    
+
         function fetchGameState() {
             fetch('/api/game_state')
                 .then(response => response.json())
@@ -67,7 +67,7 @@
                     updateScores(data.scores);
                 });
         }
-    
+
         function initializeGame(data) {
             svg.selectAll("*").remove();
             
@@ -76,13 +76,13 @@
                 .force("link", d3.forceLink(data.edges).id(d => d.id).distance(100))
                 .force("charge", d3.forceManyBody().strength(-300))
                 .force("center", d3.forceCenter(width / 2, height / 2));
-    
+
             // Draw links
             links = svg.selectAll(".link")
                 .data(data.edges)
                 .enter().append("line")
                 .attr("class", "link");
-    
+
             // Draw nodes
             nodes = svg.selectAll(".node")
                 .data(data.nodes)
@@ -91,31 +91,31 @@
                 .attr("r", d => Math.max(15, Math.sqrt(d.troops) * 2))
                 .attr("fill", d => colors[d.owner])
                 .on("click", handleNodeClick);
-    
+
             // Node labels
             labels = svg.selectAll(".node-label")
                 .data(data.nodes)
                 .enter().append("text")
                 .attr("class", "node-label")
                 .text(d => d.troops);
-    
+
             simulation.on("tick", () => {
                 links
                     .attr("x1", d => d.source.x)
                     .attr("y1", d => d.source.y)
                     .attr("x2", d => d.target.x)
                     .attr("y2", d => d.target.y);
-    
+
                 nodes
                     .attr("cx", d => d.x)
                     .attr("cy", d => d.y);
-    
+
                 labels
                     .attr("x", d => d.x)
                     .attr("y", d => d.y + 5);
             });
         }
-    
+
         function updateGame(data) {
             // Update node data
             simulation.nodes(data.nodes);
@@ -124,36 +124,33 @@
             nodes.data(data.nodes)
                 .attr("r", d => Math.max(15, Math.sqrt(d.troops) * 2))
                 .attr("fill", d => colors[d.owner]);
-    
+
             labels.data(data.nodes)
                 .text(d => d.troops);
             
             // Restart simulation with alpha 0 to prevent movement
             simulation.alpha(0).restart();
         }
-    
+
         function handleNodeClick(event, d) {
             if (!selectedSource) {
-                // Select source node (must be blue)
                 if (d.owner === 'blue' && d.troops > 1) {
                     selectedSource = d;
                     d3.select(event.target).classed("selected", true);
                     document.getElementById("status").innerHTML = `Selected source: ${d.id} (${d.troops} troops)`;
                 }
             } else {
-                // Select target node
                 if (d.id !== selectedSource.id && d.owner !== 'blue') {
                     selectedTarget = d;
                     document.getElementById("status").innerHTML = 
                         `Attack ${d.id} from ${selectedSource.id}? Enter troop count.`;
                     document.getElementById("troop-input").max = selectedSource.troops - 1;
                 } else {
-                    // Cancel selection
                     clearSelection();
                 }
             }
         }
-    
+
         function executeMove() {
             if (!selectedSource || !selectedTarget) return;
             
@@ -162,7 +159,7 @@
                 alert("Invalid troop count");
                 return;
             }
-    
+
             fetch('/api/make_move', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -182,7 +179,7 @@
                 }
             });
         }
-    
+
         function clearSelection() {
             selectedSource = null;
             selectedTarget = null;
@@ -190,14 +187,14 @@
             document.getElementById("status").innerHTML = "Select a source node";
             document.getElementById("troop-input").value = "";
         }
-    
+
         function updateScores(scores) {
             document.getElementById("scores").innerHTML = 
                 Object.entries(scores).map(([player, score]) => 
                     `<div style="color: ${colors[player]}">${player}: ${score} nodes</div>`
                 ).join('');
         }
-    
+
         function resetGame() {
             fetch('/api/reset').then(() => {
                 isInitialized = false;
@@ -205,13 +202,11 @@
                 fetchGameState();
             });
         }
-    
-        // Auto-update game state
+
         setInterval(() => {
             fetch('/api/update').then(() => fetchGameState());
         }, 1000);
-    
-        // Initial load
+
         fetchGameState();
     </script>
 </body>
