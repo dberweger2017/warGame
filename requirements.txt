@@ -1,2 +1,4 @@
 networkx
 pygame
+numpy
+gymnasium
