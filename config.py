@@ -1,7 +1,7 @@
 # config.py
 class GameConfig:
     # Timing (in game ticks, not real time)
-    GAME_TICK_SPEED = 1000  # Ticks per second (for PyGame human visualization)
+    GAME_TICK_SPEED = 50  # Ticks per second (for PyGame human visualization)
     INCOME_INTERVAL = 10    # Ticks between income
     BOT_MOVE_INTERVAL = 20  # Ticks between non-agent bot moves
 
